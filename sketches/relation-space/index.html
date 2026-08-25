@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>关系空间草图 · 知识星图</title>
+<style>
+  :root { --ink:#1e1c18; --paper:#f5efe6; --muted:#867b70; --jade:#2e9c8f; --amber:#e8bd70; --wood:#3b291f; --line:rgba(59,41,31,.16); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'DM Sans','Noto Sans SC',sans-serif; background:var(--paper); color:var(--ink); padding:42px 6vw 60px; }
+  header { max-width:1000px; margin:0 auto 26px; }
+  .eyebrow { color:var(--jade); font:600 11px/1 sans-serif; letter-spacing:.28em; text-transform:uppercase; }
+  h1 { font-family:Georgia,'Noto Serif SC',serif; font-size:clamp(28px,4.5vw,42px); font-weight:500; letter-spacing:-.02em; margin:12px 0 8px; }
+  .lede { color:var(--muted); font-size:13px; line-height:1.7; max-width:680px; }
+  .board { position:relative; max-width:1000px; height:520px; margin:0 auto; border:1px solid var(--line); border-radius:18px; overflow:hidden; background:radial-gradient(circle at 50% 40%, #fdf8f0, #f1e8da); box-shadow:0 14px 40px rgba(59,41,31,.10); }
+  .board canvas { display:block; width:100%; height:100%; }
+  .legend { max-width:1000px; margin:18px auto 0; display:flex; gap:16px; flex-wrap:wrap; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); }
+  .dot { width:9px; height:9px; border-radius:50%; }
+  .line { height:2px; width:18px; border-radius:2px; }
+  .note { max-width:1000px; margin:22px auto 0; color:var(--muted); font-size:11px; line-height:1.7; }
+  .list { max-width:1000px; margin:26px auto 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
+  .card { border:1px solid var(--line); border-radius:12px; padding:13px 15px; background:#fffdf9; }
+  .card b { display:block; font-size:12px; }
+  .card small { color:var(--muted); font-size:10px; display:block; margin-top:4px; line-height:1.6; }
+  @media (prefers-reduced-motion: reduce) { .board canvas { animation:none; } }
+</style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">Relation Space Concept</div>
+    <h1>关系空间 / 知识星图</h1>
+    <p class="lede">概念草图：把卡片关系画成星图。节点可点击回到列表/详情；无 WebGL 时仍可继续使用关系列表。仅用脱敏示例，不承载真实数据。</p>
+  </header>
+  <div class="board"><canvas id="sky"></canvas></div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--jade)"></i>知识节点</span>
+    <span><i class="dot" style="background:var(--amber)"></i>收藏/重点</span>
+    <span><i class="dot" style="background:var(--wood)"></i>普通节点</span>
+    <span><i class="line" style="background:rgba(46,156,143,.55)"></i>相关知识</span>
+    <span><i class="line" style="background:rgba(232,189,112,.7)"></i>关联项目</span>
+  </div>
+  <div class="list">
+    <div class="card"><b>技能 · 前端设计工作室</b><small>关联：3 个知识节点 · 1 个项目 · 2 个 AI 产出</small></div>
+    <div class="card"><b>知识 · 设计 Token 记录</b><small>关联：技能 1 · 项目 1 · 最近更新 2 天前</small></div>
+    <div class="card"><b>项目 · 东方数字博物馆 UI</b><small>关联：知识 3 · AI 产出 2 · 进度：验证中</small></div>
+  </div>
+  <p class="note">草图结论：2D Canvas 已足够表达“中心卡片 + 周边关系”；节点数量建议控制在 24 以内，超过时优先展示最近关联并按类型着色；正式版必须保留列表模式作为键盘/无 WebGL 入口。</p>
+<script>
+  const canvas = document.getElementById('sky');
+  const ctx = canvas.getContext('2d');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * DPR; canvas.height = rect.height * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  resize();
+  addEventListener('resize', resize);
+  const nodes = [
+    { x: 0.50, y: 0.42, r: 26, color: '#2e9c8f', label: '前端设计工作室', main: true },
+    { x: 0.20, y: 0.24, r: 13, color: '#3b291f', label: '设计 Token' },
+    { x: 0.76, y: 0.22, r: 13, color: '#3b291f', label: '展品封面' },
+    { x: 0.16, y: 0.66, r: 13, color: '#e8bd70', label: 'UI 验收' },
+    { x: 0.84, y: 0.60, r: 13, color: '#3b291f', label: '动效规则' },
+    { x: 0.52, y: 0.82, r: 13, color: '#e8bd70', label: '东方博物馆' },
+    { x: 0.32, y: 0.46, r: 10, color: '#3b291f', label: 'GSAP' },
+    { x: 0.68, y: 0.44, r: 10, color: '#3b291f', label: 'React Bits' },
+    { x: 0.44, y: 0.16, r: 10, color: '#3b291f', label: 'Spotlight' },
+    { x: 0.58, y: 0.68, r: 10, color: '#3b291f', label: '关系管理' },
+  ];
+  const edges = [
+    [0, 1, 'jade'], [0, 2, 'jade'], [0, 3, 'amber'], [0, 4, 'jade'], [0, 5, 'amber'],
+    [0, 6, 'jade'], [0, 7, 'jade'], [0, 8, 'jade'], [0, 9, 'jade'],
+  ];
+  let t = 0;
+  function draw() {
+    const w = canvas.getBoundingClientRect().width, h = canvas.getBoundingClientRect().height;
+    ctx.clearRect(0, 0, w, h);
+    for (const [a, b, kind] of edges) {
+      const na = nodes[a], nb = nodes[b];
+      ctx.strokeStyle = kind === 'jade' ? 'rgba(46,156,143,.5)' : 'rgba(232,189,112,.65)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(na.x * w, na.y * h); ctx.lineTo(nb.x * w, nb.y * h); ctx.stroke();
+    }
+    for (const n of nodes) {
+      const x = n.x * w, y = n.y * h;
+      const pulse = reduced ? 0 : Math.sin(t * 0.05 + x) * 2;
+      const r = n.r + pulse;
+      ctx.fillStyle = n.color;
+      ctx.shadowColor = n.color; ctx.shadowBlur = n.main ? 22 : 10;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#fff'; ctx.font = '500 10px "DM Sans","Noto Sans SC",sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(n.label, x, y + r + 14);
+    }
+    if (!reduced) { t++; requestAnimationFrame(draw); }
+  }
+  draw();
+</script>
+</body>
+</html>

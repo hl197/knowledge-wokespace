@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>东方材质实验室 · Shader/Canvas 实验</title>
+<style>
+  :root { --ink:#1e1c18; --paper:#f5efe6; --muted:#867b70; --jade:#2e9c8f; --amber:#e8bd70; --wood:#3b291f; --line:rgba(59,41,31,.16); }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'DM Sans','Noto Sans SC',sans-serif; background:var(--paper); color:var(--ink); padding:48px 6vw 70px; }
+  header { max-width:1000px; margin:0 auto 36px; }
+  .eyebrow { color:var(--jade); font:600 11px/1 sans-serif; letter-spacing:.28em; text-transform:uppercase; }
+  h1 { font-family:Georgia,'Noto Serif SC',serif; font-size:clamp(30px,5vw,44px); font-weight:500; letter-spacing:-.02em; margin:14px 0 8px; }
+  .lede { color:var(--muted); font-size:14px; line-height:1.7; max-width:640px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:22px; max-width:1000px; margin:0 auto; }
+  .swatch { border:1px solid var(--line); border-radius:16px; overflow:hidden; background:#fffdf9; box-shadow:0 10px 30px rgba(59,41,31,.08); }
+  canvas { display:block; width:100%; height:210px; }
+  .meta { padding:14px 16px 16px; }
+  .meta b { font-size:13px; display:block; }
+  .meta small { color:var(--muted); font-size:11px; line-height:1.6; display:block; margin-top:5px; }
+  .note { max-width:1000px; margin:30px auto 0; color:var(--muted); font-size:11px; line-height:1.7; }
+  @media (prefers-reduced-motion: reduce) { canvas { filter:none; } }
+</style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">Material Lab</div>
+    <h1>东方材质实验室</h1>
+    <p class="lede">四块抽象 Canvas 材质候选：宣纸噪点、青玉流光、琥珀光束、玻璃折射。只做视觉实验，不承载数据。</p>
+  </header>
+  <div class="grid">
+    <div class="swatch"><canvas id="paper"></canvas><div class="meta"><b>宣纸噪点 Paper Grain</b><small>柔和颗粒 + 微光晕；适合暖白主题 Hero 与空状态背景。</small></div></div>
+    <div class="swatch"><canvas id="jade"></canvas><div class="meta"><b>青玉流光 Jade Flow</b><small>慢速流动的玉色光带；适合展品封面与重点卡片氛围。</small></div></div>
+    <div class="swatch"><canvas id="amber"></canvas><div class="meta"><b>琥珀光束 Amber Rays</b><small>从左上投下的暖色光束；适合 CTA 与收藏态强调。</small></div></div>
+    <div class="swatch"><canvas id="glass"></canvas><div class="meta"><b>玻璃折射 Glass Refract</b><small>网格偏移 + 高光；适合详情页转场与科技感点缀。</small></div></div>
+  </div>
+  <p class="note">实验结论：宣纸噪点与琥珀光束适合静态装饰，成本低；青玉流光可做低帧率慢动；玻璃折射建议仅用于短时转场。所有材质都提供减少动效降级（静止画面）。</p>
+<script>
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  function setup(id) {
+    const canvas = document.getElementById(id);
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * DPR; canvas.height = rect.height * DPR;
+    ctx.scale(DPR, DPR);
+    return { canvas, ctx, w: rect.width, h: rect.height };
+  }
+  function grain(ctx, w, h) {
+    ctx.fillStyle = '#fbf7f0'; ctx.fillRect(0, 0, w, h);
+    const img = ctx.createImageData(Math.floor(w / 2), Math.floor(h / 2));
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 235 + Math.random() * 14;
+      img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v; img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const g = ctx.createRadialGradient(w / 2, h / 2, 10, w / 2, h / 2, w * 0.55);
+    g.addColorStop(0, 'rgba(232,189,112,.10)'); g.addColorStop(1, 'rgba(232,189,112,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  }
+  function jade(ctx, w, h, t) {
+    ctx.fillStyle = '#eef6f1'; ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 5; i++) {
+      const x = ((w * 0.22 + i * w * 0.15 + t * 14) % (w + 200)) - 100;
+      const y = h * (0.25 + (i % 3) * 0.18);
+      const g = ctx.createRadialGradient(x, y, 4, x, y, 130);
+      g.addColorStop(0, 'rgba(46,156,143,.22)'); g.addColorStop(1, 'rgba(46,156,143,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 130, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(46,156,143,.30)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const y = h * (0.3 + i * 0.2) + Math.sin(t * 0.02 + i) * 4;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 6) ctx.lineTo(x, y + Math.sin(x * 0.02 + t * 0.02 + i) * 6);
+      ctx.stroke();
+    }
+  }
+  function amber(ctx, w, h, t) {
+    ctx.fillStyle = '#fbf6ec'; ctx.fillRect(0, 0, w, h);
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, 'rgba(232,189,112,.34)');
+    grad.addColorStop(0.35, 'rgba(232,189,112,.10)');
+    grad.addColorStop(0.7, 'rgba(232,189,112,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(w * 0.5, 0); ctx.lineTo(0, h * 0.7); ctx.closePath(); ctx.fill();
+    for (let i = 0; i < 6; i++) {
+      const x0 = w * 0.02 + i * w * 0.06 + (reduced ? 0 : Math.sin(t * 0.004 + i) * 6);
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, 'rgba(255,240,210,.4)'); g.addColorStop(1, 'rgba(255,240,210,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0 + 9, 0); ctx.lineTo(x0 - 26, h); ctx.lineTo(x0 - 56, h); ctx.closePath(); ctx.fill();
+    }
+  }
+  function glass(ctx, w, h, t) {
+    ctx.fillStyle = '#f2f7fa'; ctx.fillRect(0, 0, w, h);
+    const off = reduced ? 0 : Math.sin(t * 0.02) * 5;
+    ctx.strokeStyle = 'rgba(46,120,143,.22)'; ctx.lineWidth = 1;
+    for (let y = 0; y < h; y += 22) { ctx.beginPath(); ctx.moveTo(0, y + off); ctx.lineTo(w, y - off); ctx.stroke(); }
+    for (let x = 0; x < w; x += 42) { ctx.beginPath(); ctx.moveTo(x - off, 0); ctx.lineTo(x + off, h); ctx.stroke(); }
+    const g = ctx.createRadialGradient(w * 0.72, h * 0.3, 8, w * 0.72, h * 0.3, 120);
+    g.addColorStop(0, 'rgba(255,255,255,.85)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  }
+  const a = setup('paper'), b = setup('jade'), c = setup('amber'), d = setup('glass');
+  grain(a.ctx, a.w, a.h);
+  function frame(t) {
+    jade(b.ctx, b.w, b.h, t / 1000);
+    amber(c.ctx, c.w, c.h, t / 1000);
+    glass(d.ctx, d.w, d.h, t / 1000);
+    if (!reduced) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

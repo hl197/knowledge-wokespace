@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>东方数字博物馆 · 滚动叙事实验</title>
+<style>
+  :root {
+    --ink:#1e1c18; --paper:#f5efe6; --wood:#3b291f; --jade:#2e9c8f;
+    --amber:#e8bd70; --line:rgba(59,41,31,.16); --muted:#867b70;
+    --ease:cubic-bezier(.2,.7,.2,1);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html { scroll-behavior:smooth; }
+  body { font-family:'Cormorant Garamond','Noto Serif SC',Georgia,serif; background:var(--paper); color:var(--ink); overflow-x:hidden; }
+  .progress { position:fixed; top:0; left:0; right:0; height:3px; z-index:50; background:var(--line); }
+  .progress i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--jade),var(--amber)); transition:width .12s linear; }
+  .stage { position:relative; min-height:100vh; display:grid; place-items:center; padding:9vh 7vw; }
+  .stage::before { content:''; position:absolute; inset:0; background:radial-gradient(circle at 68% 30%, rgba(232,189,112,.32), transparent 42%), radial-gradient(circle at 22% 72%, rgba(46,156,143,.2), transparent 46%); }
+  .inner { position:relative; z-index:1; max-width:900px; text-align:center; }
+  .eyebrow { display:inline-flex; align-items:center; gap:10px; color:var(--jade); font:600 12px/1 'DM Sans','Noto Sans SC',sans-serif; letter-spacing:.28em; text-transform:uppercase; }
+  .eyebrow::before,.eyebrow::after { content:''; width:34px; height:1px; background:var(--line); }
+  h1 { font-size:clamp(44px,8vw,92px); font-weight:500; line-height:1.02; letter-spacing:-.03em; margin:26px 0 18px; }
+  h1 em { font-style:italic; color:var(--jade); }
+  .lede { max-width:560px; margin:0 auto; color:var(--muted); font:400 18px/1.7 'Crimson Pro','Noto Sans SC',serif; }
+  .chips { display:flex; gap:10px; justify-content:center; margin-top:30px; flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:8px 16px; font:500 12px/1 'DM Sans','Noto Sans SC',sans-serif; color:var(--muted); }
+  .chapter { position:relative; min-height:92vh; display:grid; place-items:center; padding:9vh 7vw; border-top:1px solid var(--line); overflow:hidden; }
+  .chapter:nth-of-type(odd) { background:linear-gradient(180deg,#fbf7f1,var(--paper)); }
+  .chapter:nth-of-type(even) { background:linear-gradient(180deg,#efe7da,var(--paper)); }
+  .chapter .inner { text-align:left; max-width:760px; }
+  .num { color:var(--amber); font:600 13px/1 'DM Sans','Noto Sans SC',sans-serif; letter-spacing:.2em; }
+  h2 { font-size:clamp(32px,5vw,56px); font-weight:500; letter-spacing:-.02em; margin:18px 0 14px; }
+  .body { color:var(--muted); font:400 17px/1.8 'Crimson Pro','Noto Sans SC',serif; }
+  .body b { color:var(--wood); font-weight:600; }
+  .orb { position:absolute; border:1px solid var(--line); border-radius:50%; }
+  .orb-a { width:44vw; height:44vw; right:-12vw; top:12vh; border-color:rgba(46,156,143,.28); transform:rotate(-22deg); }
+  .orb-b { width:26vw; height:26vw; left:-8vw; bottom:6vh; border-color:rgba(232,189,112,.4); transform:rotate(36deg); }
+  .cta { position:relative; min-height:86vh; display:grid; place-items:center; padding:9vh 7vw; background:radial-gradient(circle at 50% 42%, #3d2c20, #241a12 72%); color:#f5efe6; }
+  .cta .inner { text-align:center; }
+  .cta h2 { color:#f5efe6; }
+  .cta .body { color:rgba(245,239,230,.78); }
+  .btn { display:inline-flex; align-items:center; gap:10px; margin-top:34px; border:0; border-radius:999px; padding:15px 30px; background:linear-gradient(135deg,var(--jade),#1f6f66); color:#fff; font:700 15px/1 'DM Sans','Noto Sans SC',sans-serif; cursor:pointer; box-shadow:0 14px 34px rgba(0,0,0,.3); transition:transform .2s var(--ease), box-shadow .2s var(--ease); }
+  .btn:hover { transform:translateY(-2px); box-shadow:0 18px 42px rgba(0,0,0,.38); }
+  .reveal { opacity:0; transform:translateY(26px); transition:opacity .8s var(--ease), transform .8s var(--ease); }
+  .reveal.on { opacity:1; transform:none; }
+  .parallax { will-change:transform; }
+  .note { position:fixed; right:18px; bottom:14px; z-index:40; color:var(--muted); font:500 11px/1 'DM Sans','Noto Sans SC',sans-serif; background:rgba(245,239,230,.85); border:1px solid var(--line); border-radius:999px; padding:7px 12px; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior:auto; }
+    .reveal { opacity:1 !important; transform:none !important; transition:none !important; }
+    .parallax { transform:none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="progress"><i id="bar"></i></div>
+  <section class="stage">
+    <div class="inner">
+      <div class="eyebrow">Eastern Digital Library</div>
+      <h1>一座东方数字<br /><em>知识博物馆</em></h1>
+      <p class="lede">滚动进入展厅：技能、知识、项目与 AI 产出，像展品一样被收藏、被检索、被继续使用。</p>
+      <div class="chips"><span class="chip">技能展柜</span><span class="chip">知识档案</span><span class="chip">项目资料</span><span class="chip">AI 产出</span></div>
+    </div>
+  </section>
+  <section class="chapter">
+    <div class="orb orb-a parallax" data-speed="-10"></div>
+    <div class="inner reveal">
+      <span class="num">CHAPTER 01</span>
+      <h2>技能，是打磨过的工具</h2>
+      <p class="body">每一张技能卡片都是一件<b>青玉工具</b>：精密、克制、可复用。它们在本地沉淀，等待被下次任务再次调用。</p>
+    </div>
+  </section>
+  <section class="chapter">
+    <div class="orb orb-b parallax" data-speed="12"></div>
+    <div class="inner reveal">
+      <span class="num">CHAPTER 02</span>
+      <h2>知识，是透明的档案</h2>
+      <p class="body">水晶书页、玻璃档案与知识棱镜。正文、来源、版本与关系都被完整保留，<b>只保存在本机</b>。</p>
+    </div>
+  </section>
+  <section class="chapter">
+    <div class="orb orb-a parallax" data-speed="-8"></div>
+    <div class="inner reveal">
+      <span class="num">CHAPTER 03</span>
+      <h2>项目资料，是木构的工程</h2>
+      <p class="body">从草稿到里程碑，项目像<b>木构模型</b>一样可以被追溯、被组装，也可以被拆开审视。</p>
+    </div>
+  </section>
+  <section class="cta">
+    <div class="inner reveal">
+      <div class="eyebrow" style="color:var(--amber)">Enter the Collection</div>
+      <h2>把重要的东西，放在一起。</h2>
+      <p class="body">回到工作台，继续浏览、收藏和整理你的 AI 资产。</p>
+      <button class="btn" onclick="window.close()">进入展馆 →</button>
+    </div>
+  </section>
+  <span class="note">滚动叙事实验页 · 不承载真实数据</span>
+<script>
+  const bar = document.getElementById('bar');
+  const updateProgress = () => {
+    const h = document.documentElement;
+    const max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+  };
+  addEventListener('scroll', updateProgress, { passive:true });
+  updateProgress();
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) entry.target.classList.add('on');
+    }
+  }, { threshold: 0.22 });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  if (!reduced) {
+    const layers = document.querySelectorAll('.parallax');
+    let ticking = false;
+    addEventListener('scroll', () => {
+      if (ticking) return; ticking = true;
+      requestAnimationFrame(() => {
+        for (const layer of layers) {
+          const speed = Number(layer.dataset.speed || 0);
+          const rect = layer.getBoundingClientRect();
+          const center = rect.top + rect.height / 2 - innerHeight / 2;
+          layer.style.transform = 'translate3d(0,' + (center * speed * 0.02).toFixed(1) + 'px,0)';
+        }
+        ticking = false;
+      });
+    }, { passive:true });
+  }
+</script>
+</body>
+</html>

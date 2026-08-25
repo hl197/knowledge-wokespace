@@ -1,0 +1,27 @@
+node_modules/
+dist/
+src-tauri/target/
+.DS_Store
+*.log
+# Personal data must never be committed
+data/
+workbench-data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+
+# Local Python caches
+__pycache__/
+*.py[cod]
+
+# Third-party read-only research source (clone, not part of this repo)
+vendor/
+
+# Design-system generation artifacts (keep for local reference; do not commit generated palettes)
+design-system/
+
+# Local sketch experiments are optional to commit; keep them out unless explicitly reviewed
+# sketches/

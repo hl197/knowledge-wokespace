@@ -9,6 +9,7 @@ export interface Card {
   tags: string[]
   source: string
   sourcePath?: string
+  contentPath?: string
   visibility: '本机助手可读' | '仅工作台'
   status: CardStatus
   favorite: boolean

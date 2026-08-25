@@ -1,4 +1,7 @@
 use rusqlite::{params, Connection};
+use mysql::{Opts, Pool, PooledConn};
+use mysql::prelude::Queryable;
+use sha2::Digest;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
@@ -34,7 +37,32 @@ struct ImportRequest { path: String, #[serde(default)] actor: String }
 
 fn default_visibility() -> String { "本机助手可读".into() }
 fn default_status() -> String { "草稿".into() }
+const MYSQL_CREDENTIAL_SERVICE: &str = "HermesWorkbench/MySQL";
+const MYSQL_USER: &str = "root";
+const MYSQL_DATABASE: &str = "personal_ai_workbench";
 fn data_root() -> PathBuf { PathBuf::from(DATA_ROOT) }
+
+fn mysql_password() -> Result<String, String> {
+    keyring::Entry::new_with_target(MYSQL_CREDENTIAL_SERVICE, MYSQL_CREDENTIAL_SERVICE, MYSQL_USER)
+        .map_err(|e| format!("创建 Windows 凭据条目失败: {e}"))?
+        .get_password()
+        .map_err(|e| format!("读取 Windows 凭据失败，请检查 {MYSQL_CREDENTIAL_SERVICE}: {e}"))
+}
+
+fn mysql_connection() -> Result<PooledConn, String> {
+    let password = mysql_password()?;
+    let builder = mysql::OptsBuilder::new()
+        .ip_or_hostname(Some("127.0.0.1"))
+        .tcp_port(3306)
+        .user(Some(MYSQL_USER))
+        .pass(Some(password))
+        .db_name(Some(MYSQL_DATABASE));
+    Pool::new(Opts::from(builder))
+        .map_err(|e| format!("创建 MySQL 连接池失败: {e}"))?
+        .get_conn()
+        .map_err(|e| format!("连接 MySQL 失败: {e}"))
+}
+
 fn now_string() -> String { chrono_like_now().to_string() }
 fn chrono_like_now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() }
 fn json_response(value: serde_json::Value, status: u16) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -128,6 +156,93 @@ mod tests {
     }
 }
 
+fn mysql_insert_card(card: &NewCard, source_path: Option<&str>, id: String) -> Result<String, String> {
+    validate_card(card)?;
+    let content = card.content.clone(); let tags = serde_json::to_string(&card.tags).map_err(|e| e.to_string())?; let stamp = chrono_like_now() as i64;
+    let mut conn = mysql_connection()?;
+    conn.query_drop("START TRANSACTION").map_err(|e|e.to_string())?;
+    let result = (|| {
+        conn.exec_drop("INSERT INTO cards (id,title,summary,card_type,tags,source,source_path,visibility,status,favorite,created_at,updated_at) VALUES (:id,:title,:summary,:card_type,:tags,:source,:source_path,:visibility,:status,FALSE,FROM_UNIXTIME(:stamp),FROM_UNIXTIME(:stamp))", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(),mysql::Value::from(id.clone())),(b"title".to_vec(),mysql::Value::from(card.title.trim())),(b"summary".to_vec(),mysql::Value::from(card.summary.clone())),(b"card_type".to_vec(),mysql::Value::from(card.card_type.clone())),(b"tags".to_vec(),mysql::Value::from(tags.clone())),(b"source".to_vec(),mysql::Value::from(card.source.clone())),(b"source_path".to_vec(),mysql::Value::from(source_path.map(str::to_string))), (b"visibility".to_vec(),mysql::Value::from(card.visibility.clone())),(b"status".to_vec(),mysql::Value::from(card.status.clone())),(b"stamp".to_vec(),mysql::Value::from(stamp))]))).map_err(|e|e.to_string())?;
+        conn.exec_drop("INSERT INTO card_contents (card_id,content,content_sha256,updated_at) VALUES (:id,:content,:hash,FROM_UNIXTIME(:stamp))", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(),mysql::Value::from(id.clone())),(b"content".to_vec(),mysql::Value::from(content.clone())),(b"hash".to_vec(),mysql::Value::from(format!("{:x}",sha2::Sha256::digest(content.as_bytes())))),(b"stamp".to_vec(),mysql::Value::from(stamp))]))).map_err(|e|e.to_string())?;
+        conn.exec_drop("INSERT INTO audit_log (actor,action,target_id,detail,created_at) VALUES (:actor,'create_card',:id,'create card',FROM_UNIXTIME(:stamp))", mysql::Params::Named(std::collections::HashMap::from([(b"actor".to_vec(),mysql::Value::from(card.actor.clone())),(b"id".to_vec(),mysql::Value::from(id.clone())),(b"stamp".to_vec(),mysql::Value::from(stamp))]))).map_err(|e|e.to_string())?;
+        Ok::<_,String>(())
+    })();
+    match result { Ok(()) => { conn.query_drop("COMMIT").map_err(|e|e.to_string())?; Ok(id) }, Err(e) => { let _=conn.query_drop("ROLLBACK"); Err(e) } }
+}
+
+fn mysql_update_card(id: &str, patch: CardPatch) -> Result<serde_json::Value, String> {
+    let mut conn = mysql_connection()?;
+    let current: mysql::Row = conn.exec_first("SELECT title,summary,tags,status,favorite,COALESCE(cc.content,'') FROM cards c LEFT JOIN card_contents cc ON cc.card_id=c.id WHERE c.id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e|e.to_string())?.ok_or_else(|| "卡片不存在".to_string())?;
+    let old_content = current.get::<String,usize>(5).unwrap_or_default();
+    let content = patch.content.clone().unwrap_or(old_content.clone()); if content.len() > 2_000_000 { return Err("正文超过 2MB 限制".into()); }
+    let actor = patch.actor.as_deref().unwrap_or("").trim(); if actor.is_empty() { return Err("缺少 actor，拒绝写入操作".into()); }
+    let stamp=chrono_like_now() as i64; let title=patch.title.clone().unwrap_or_else(||current.get::<String,usize>(0).unwrap_or_default()); let summary=patch.summary.clone().unwrap_or_else(||current.get::<String,usize>(1).unwrap_or_default()); let tags=serde_json::to_string(&patch.tags.clone().unwrap_or_else(||serde_json::from_str(&current.get::<String,usize>(2).unwrap_or_else(||"[]".into())).unwrap_or_default())).map_err(|e|e.to_string())?; let status=patch.status.clone().unwrap_or_else(||current.get::<String,usize>(3).unwrap_or_default()); let favorite=patch.favorite.unwrap_or_else(||current.get::<bool,usize>(4).unwrap_or(false));
+    conn.query_drop("START TRANSACTION").map_err(|e|e.to_string())?;
+    let result=(||{ let mut p=std::collections::HashMap::new(); p.insert(b"card_id".to_vec(),mysql::Value::from(id)); p.insert(b"title".to_vec(),mysql::Value::from(current.get::<String,usize>(0).unwrap_or_default())); p.insert(b"summary".to_vec(),mysql::Value::from(current.get::<String,usize>(1).unwrap_or_default())); p.insert(b"tags".to_vec(),mysql::Value::from(current.get::<String,usize>(2).unwrap_or_else(||"[]".into()))); p.insert(b"status".to_vec(),mysql::Value::from(current.get::<String,usize>(3).unwrap_or_default())); p.insert(b"content".to_vec(),mysql::Value::from(old_content.clone())); p.insert(b"hash".to_vec(),mysql::Value::from(format!("{:x}",sha2::Sha256::digest(old_content.as_bytes())))); p.insert(b"stamp".to_vec(),mysql::Value::from(stamp)); conn.exec_drop("INSERT INTO card_versions (card_id,title,summary,tags,status,content,content_sha256,created_at) VALUES (:card_id,:title,:summary,:tags,:status,:content,:hash,FROM_UNIXTIME(:stamp))",mysql::Params::Named(p)).map_err(|e|e.to_string())?; let mut p=std::collections::HashMap::new(); p.insert(b"id".to_vec(),mysql::Value::from(id)); p.insert(b"title".to_vec(),mysql::Value::from(title)); p.insert(b"summary".to_vec(),mysql::Value::from(summary)); p.insert(b"tags".to_vec(),mysql::Value::from(tags)); p.insert(b"status".to_vec(),mysql::Value::from(status)); p.insert(b"favorite".to_vec(),mysql::Value::from(favorite)); p.insert(b"stamp".to_vec(),mysql::Value::from(stamp)); conn.exec_drop("UPDATE cards SET title=:title,summary=:summary,tags=:tags,status=:status,favorite=:favorite,updated_at=FROM_UNIXTIME(:stamp) WHERE id=:id",mysql::Params::Named(p)).map_err(|e|e.to_string())?; let mut p=std::collections::HashMap::new(); p.insert(b"id".to_vec(),mysql::Value::from(id)); p.insert(b"content".to_vec(),mysql::Value::from(content.clone())); p.insert(b"hash".to_vec(),mysql::Value::from(format!("{:x}",sha2::Sha256::digest(content.as_bytes())))); p.insert(b"stamp".to_vec(),mysql::Value::from(stamp)); conn.exec_drop("UPDATE card_contents SET content=:content,content_sha256=:hash,updated_at=FROM_UNIXTIME(:stamp) WHERE card_id=:id",mysql::Params::Named(p)).map_err(|e|e.to_string())?; let mut p=std::collections::HashMap::new(); p.insert(b"actor".to_vec(),mysql::Value::from(actor)); p.insert(b"id".to_vec(),mysql::Value::from(id)); p.insert(b"stamp".to_vec(),mysql::Value::from(stamp)); conn.exec_drop("INSERT INTO audit_log(actor,action,target_id,detail,created_at) VALUES(:actor,'update_card',:id,'update card',FROM_UNIXTIME(:stamp))",mysql::Params::Named(p)).map_err(|e|e.to_string())?; Ok::<_,String>(()) })(); match result { Ok(())=>{conn.query_drop("COMMIT").map_err(|e|e.to_string())?; mysql_get_card(id)}, Err(e)=>{let _=conn.query_drop("ROLLBACK");Err(e)} }
+}
+
+fn mysql_add_relation(from_id:&str, request:RelationRequest)->Result<(),String>{ if request.actor.trim().is_empty(){return Err("缺少 actor，拒绝写入操作".into())} let allowed=["关联项目","相关知识","来源于","依赖"]; if !allowed.contains(&request.relation_type.as_str()){return Err("不支持的关系类型".into())} let mut conn=mysql_connection()?; let changed=conn.exec_drop("INSERT INTO card_relations(from_card_id,to_card_id,relation_type,created_at) VALUES(:from_id,:to_id,:relation_type,NOW(6))",mysql::Params::Named(std::collections::HashMap::from([(b"from_id".to_vec(),mysql::Value::from(from_id)),(b"to_id".to_vec(),mysql::Value::from(request.to_card_id)),(b"relation_type".to_vec(),mysql::Value::from(request.relation_type))]))); changed.map_err(|e|e.to_string())?; Ok(()) }
+
+fn mysql_restore_version(id:&str, version_id:i64)->Result<serde_json::Value,String>{ let mut conn=mysql_connection()?; let row: mysql::Row = conn.exec_first("SELECT title,summary,tags,status,content FROM card_versions WHERE id=:version_id AND card_id=:id",mysql::Params::Named(std::collections::HashMap::from([(b"version_id".to_vec(),mysql::Value::from(version_id)),(b"id".to_vec(),mysql::Value::from(id))]))).map_err(|e|e.to_string())?.ok_or_else(||"版本不存在".to_string())?; let title=row.get::<String,usize>(0).unwrap_or_default(); let summary=row.get::<String,usize>(1).unwrap_or_default(); let tags=row.get::<String,usize>(2).unwrap_or_else(||"[]".into()); let status=row.get::<String,usize>(3).unwrap_or_default(); let content=row.get::<String,usize>(4).unwrap_or_default(); let patch=CardPatch{title:Some(title),summary:Some(summary),tags:serde_json::from_str(&tags).ok(),status:Some(status),favorite:None,content:Some(content),actor:Some("desktop-user".into())}; mysql_update_card(id,patch) }
+
+fn mysql_card_json(row: mysql::Row) -> Result<serde_json::Value, String> {
+    let get = |index: usize| row.get::<String, usize>(index).ok_or_else(|| format!("MySQL 卡片列 {index} 缺失"));
+    let id = get(0)?; let title = get(1)?; let summary = get(2)?; let card_type = get(3)?; let tags = get(4)?; let source = get(5)?; let source_path = row.get::<Option<String>, usize>(6).unwrap_or(None); let visibility = get(7)?; let status = get(8)?; let favorite = row.get::<bool, usize>(9).unwrap_or(false); let created_at = row.get::<i64, usize>(10).unwrap_or(0); let updated_at = row.get::<i64, usize>(11).unwrap_or(0); let deleted_at = row.get::<Option<i64>, usize>(12).unwrap_or(None); let content = get(13)?;
+    Ok(serde_json::json!({"id":id,"title":title,"summary":summary,"type":card_type,"tags":serde_json::from_str::<serde_json::Value>(&tags).unwrap_or(serde_json::json!([])),"source":source,"sourcePath":source_path,"visibility":visibility,"status":status,"favorite":favorite,"content":content,"accent":color_for_type(&card_type),"createdAt":created_at.to_string(),"updatedAt":updated_at.to_string(),"deletedAt":deleted_at,"contentPath":source_path}))
+}
+
+
+fn mysql_list_cards(params: &std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
+    let mut conn = mysql_connection()?;
+    let query = params.get("query").cloned().unwrap_or_default();
+    let mut sql = String::from("SELECT c.id,c.title,c.summary,c.card_type,c.tags,c.source,c.source_path,c.visibility,c.status,c.favorite,CAST(UNIX_TIMESTAMP(c.created_at) AS SIGNED),CAST(UNIX_TIMESTAMP(c.updated_at) AS SIGNED),CAST(UNIX_TIMESTAMP(c.deleted_at) AS SIGNED),COALESCE(cc.content,'') FROM cards c LEFT JOIN card_contents cc ON cc.card_id=c.id WHERE 1=1");
+    let mut named: std::collections::HashMap<Vec<u8>, mysql::Value> = std::collections::HashMap::new();
+    if !query.trim().is_empty() { sql.push_str(" AND (c.title LIKE :q OR c.summary LIKE :q OR c.tags LIKE :q OR cc.content LIKE :q)"); named.insert(b"q".to_vec(), mysql::Value::from(format!("%{}%", query))); }
+    if let Some(v) = params.get("type") { sql.push_str(" AND c.card_type=:type"); named.insert(b"type".to_vec(), mysql::Value::from(v.clone())); }
+    if let Some(v) = params.get("status") { sql.push_str(" AND c.status=:status"); named.insert(b"status".to_vec(), mysql::Value::from(v.clone())); }
+    if let Some(v) = params.get("tag") { sql.push_str(" AND JSON_CONTAINS(c.tags, JSON_QUOTE(:tag))"); named.insert(b"tag".to_vec(), mysql::Value::from(v.clone())); }
+    if params.get("include_deleted").map(String::as_str) != Some("1") { sql.push_str(" AND c.deleted_at IS NULL"); }
+    sql.push_str(" ORDER BY c.updated_at DESC");
+    let rows: Vec<mysql::Row> = if named.is_empty() { conn.query(sql).map_err(|e| e.to_string())? } else { conn.exec(sql, mysql::Params::Named(named)).map_err(|e| e.to_string())? };
+    rows.into_iter().map(mysql_card_json).collect::<Result<Vec<_>,_>>().map(serde_json::Value::Array)
+}
+
+fn mysql_get_card(id: &str) -> Result<serde_json::Value, String> {
+    let mut conn = mysql_connection()?;
+    let row = conn.exec_first("SELECT c.id,c.title,c.summary,c.card_type,c.tags,c.source,c.source_path,c.visibility,c.status,c.favorite,CAST(UNIX_TIMESTAMP(c.created_at) AS SIGNED),CAST(UNIX_TIMESTAMP(c.updated_at) AS SIGNED),CAST(UNIX_TIMESTAMP(c.deleted_at) AS SIGNED),COALESCE(cc.content,'') FROM cards c LEFT JOIN card_contents cc ON cc.card_id=c.id WHERE c.id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e| e.to_string())?.ok_or_else(|| "卡片不存在".to_string())?;
+    mysql_card_json(row)
+}
+
+fn mysql_list_versions(id: &str) -> Result<serde_json::Value, String> {
+    let mut conn = mysql_connection()?;
+    let rows: Vec<mysql::Row> = conn.exec("SELECT id,card_id,title,summary,tags,status,UNIX_TIMESTAMP(created_at) FROM card_versions WHERE card_id=:id ORDER BY id DESC", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e|e.to_string())?;
+    let mut result = Vec::new();
+    for row in rows { let (id,card_id,title,summary,tags,status,created_at):(i64,String,String,String,String,String,i64)=mysql::from_row_opt(row).map_err(|e|e.to_string())?; result.push(serde_json::json!({"id":id,"cardId":card_id,"title":title,"summary":summary,"tags":serde_json::from_str::<serde_json::Value>(&tags).unwrap_or(serde_json::json!([])),"status":status,"createdAt":created_at.to_string()})); }
+    Ok(serde_json::Value::Array(result))
+}
+
+fn mysql_list_relations(id: &str) -> Result<serde_json::Value, String> {
+    let mut conn = mysql_connection()?;
+    let rows: Vec<mysql::Row> = conn.exec("SELECT r.to_card_id,r.relation_type,c.title,c.card_type FROM card_relations r LEFT JOIN cards c ON c.id=r.to_card_id WHERE r.from_card_id=:id ORDER BY r.created_at DESC", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e|e.to_string())?;
+    let mut result=Vec::new(); for row in rows { let (card_id,relation_type,title,card_type):(String,String,Option<String>,Option<String>)=mysql::from_row_opt(row).map_err(|e|e.to_string())?; result.push(serde_json::json!({"cardId":card_id,"relationType":relation_type,"title":title,"type":card_type})); } Ok(serde_json::Value::Array(result))
+}
+
+fn mysql_search_context(params: &std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
+    let query = params.get("q").or_else(|| params.get("query")).cloned().unwrap_or_default();
+    if query.trim().is_empty() { return Err("缺少搜索关键词 q".into()); }
+    let mut search_params = params.clone(); search_params.insert("query".into(), query.clone());
+    let results = mysql_list_cards(&search_params)?;
+    let count = results.as_array().map(|v| v.len()).unwrap_or(0);
+    Ok(serde_json::json!({"query":query,"count":count,"results":results}))
+}
+
+fn mysql_list_audit(params: &std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
+    let limit = params.get("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(50).min(200);
+    let mut conn = mysql_connection()?;
+    let rows: Vec<mysql::Row> = conn.exec("SELECT id,actor,action,target_id,detail,UNIX_TIMESTAMP(created_at) FROM audit_log ORDER BY id DESC LIMIT :limit", mysql::Params::Named(std::collections::HashMap::from([(b"limit".to_vec(), mysql::Value::from(limit as u64))]))).map_err(|e|e.to_string())?;
+    let mut result=Vec::new(); for row in rows { let id=row.get::<i64,usize>(0).unwrap_or(0); result.push(serde_json::json!({"id":id,"actor":row.get::<String,usize>(1).unwrap_or_default(),"action":row.get::<String,usize>(2).unwrap_or_default(),"targetId":row.get::<Option<String>,usize>(3).unwrap_or(None),"detail":row.get::<Option<String>,usize>(4).unwrap_or(None),"createdAt":row.get::<i64,usize>(5).unwrap_or(0).to_string()})); } Ok(serde_json::Value::Array(result))
+}
+
 fn parse_query(url: &str) -> (String, std::collections::HashMap<String, String>) {
     let mut parts = url.splitn(2, '?'); let path = parts.next().unwrap_or_default().to_string(); let mut map = std::collections::HashMap::new();
     if let Some(query) = parts.next() { for pair in query.split('&') { let mut kv = pair.splitn(2, '='); if let (Some(k), Some(v)) = (kv.next(), kv.next()) { map.insert(percent_decode(k), percent_decode(v)); } } }
@@ -215,20 +330,20 @@ fn handle_request(mut request: Request) {
     let (path, params) = parse_query(request.url());
     let response = match (request.method(), path.as_str()) {
       (&Method::Options, _) => json_response(serde_json::json!({"ok":true}), 204),
-      (&Method::Get, "/api/health") => json_response(serde_json::json!({"ok":true,"service":"personal-ai-workbench","storage":"sqlite-markdown"}), 200),
-      (&Method::Get, "/api/search") => search_context(&params, false).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)),
-      (&Method::Get, "/api/context") => search_context(&params, true).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)),
-      (&Method::Get, "/api/audit") => list_audit(&params).map(|v|json_response(v,200)).unwrap_or_else(|e|error_response(&e,500)),
-      (&Method::Get, "/api/cards") => list_cards(&params).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 500)),
-      (&Method::Get, p) if p.starts_with("/api/cards/") && p.ends_with("/relations") => { let id=&p[11..p.len()-10]; list_relations(id).map(|v|json_response(v,200)).unwrap_or_else(|e|error_response(&e,404)) },
-      (&Method::Post, p) if p.starts_with("/api/cards/") && p.ends_with("/relations") => { let id=&p[11..p.len()-10]; match read_body(&mut request).and_then(|b|serde_json::from_str::<RelationRequest>(&b).map_err(|e|e.to_string())).and_then(|r|add_relation(id,r)){Ok(())=>json_response(serde_json::json!({"status":"created"}),201),Err(e)=>error_response(&e,400)} },
-      (&Method::Get, p) if p.starts_with("/api/cards/") && p.ends_with("/versions") => { let id = &p[11..p.len()-9]; list_versions(id).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 404)) },
-      (&Method::Post, p) if p.starts_with("/api/cards/") && p.contains("/versions/") && p.ends_with("/restore") => { let prefix = &p[11..p.len()-8]; let mut parts = prefix.split("/versions/"); let id = parts.next().unwrap_or_default(); let version_id = parts.next().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0); restore_version(id, version_id).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)) },
-      (&Method::Get, p) if p.starts_with("/api/cards/") => { let id = &p[11..]; match db_connection().and_then(|db| { let mut stmt = db.prepare("SELECT id,title,summary,card_type,tags,source,source_path,visibility,status,content_path,favorite,created_at,updated_at,deleted_at FROM cards WHERE id=?1").map_err(|e| e.to_string())?; stmt.query_row([id], card_json).map_err(|e| e.to_string()) }) { Ok(card) => json_response(card, 200), Err(_) => error_response("卡片不存在", 404) } },
+      (&Method::Get, "/api/health") => json_response(serde_json::json!({"ok":true,"service":"personal-ai-workbench","storage":"mysql","host":"127.0.0.1","port":3306,"database":MYSQL_DATABASE}), 200),
+      (&Method::Get, "/api/search") => mysql_search_context(&params).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)),
+      (&Method::Get, "/api/context") => mysql_search_context(&params).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)),
+      (&Method::Get, "/api/audit") => mysql_list_audit(&params).map(|v|json_response(v,200)).unwrap_or_else(|e|error_response(&e,500)),
+      (&Method::Get, "/api/cards") => mysql_list_cards(&params).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 500)),
+      (&Method::Get, p) if p.starts_with("/api/cards/") && p.ends_with("/relations") => { let id=&p[11..p.len()-10]; mysql_list_relations(id).map(|v|json_response(v,200)).unwrap_or_else(|e|error_response(&e,404)) },
+      (&Method::Post, p) if p.starts_with("/api/cards/") && p.ends_with("/relations") => { let id=&p[11..p.len()-10]; match read_body(&mut request).and_then(|b|serde_json::from_str::<RelationRequest>(&b).map_err(|e|e.to_string())).and_then(|r|mysql_add_relation(id,r)){Ok(())=>json_response(serde_json::json!({"status":"created"}),201),Err(e)=>error_response(&e,400)} },
+      (&Method::Get, p) if p.starts_with("/api/cards/") && p.ends_with("/versions") => { let id = &p[11..p.len()-9]; mysql_list_versions(id).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 404)) },
+      (&Method::Post, p) if p.starts_with("/api/cards/") && p.contains("/versions/") && p.ends_with("/restore") => { let prefix = &p[11..p.len()-8]; let mut parts = prefix.split("/versions/"); let id = parts.next().unwrap_or_default(); let version_id = parts.next().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0); mysql_restore_version(id, version_id).map(|v| json_response(v, 200)).unwrap_or_else(|e| error_response(&e, 400)) },
+      (&Method::Get, p) if p.starts_with("/api/cards/") => { let id = &p[11..]; match mysql_get_card(id) { Ok(card) => json_response(card, 200), Err(_) => error_response("卡片不存在", 404) } },
       (&Method::Post, "/api/backup") => match create_backup() { Ok(path) => { if let Ok(db)=db_connection(){ let _=audit(&db,"desktop-user","backup",None,&path); } json_response(serde_json::json!({"status":"created","path":path}), 201) }, Err(e) => error_response(&e, 500) },
-      (&Method::Post, "/api/cards") => match read_body(&mut request).and_then(|body| serde_json::from_str::<NewCard>(&body).map_err(|e| format!("请求格式错误: {e}"))).and_then(|card| db_connection().and_then(|db| insert_card(&db, &card, None, format!("card-{}", chrono_like_now())))) { Ok(id) => json_response(serde_json::json!({"id": id, "status":"created"}), 201), Err(e) => error_response(&e, 400) },
+      (&Method::Post, "/api/cards") => match read_body(&mut request).and_then(|body| serde_json::from_str::<NewCard>(&body).map_err(|e| format!("请求格式错误: {e}"))).and_then(|card| mysql_insert_card(&card, None, format!("card-{}", chrono_like_now()))) { Ok(id) => json_response(serde_json::json!({"id": id, "status":"created"}), 201), Err(e) => error_response(&e, 400) },
       (&Method::Post, "/api/import") => match read_body(&mut request).and_then(|body| serde_json::from_str::<ImportRequest>(&body).map_err(|e| format!("请求格式错误: {e}"))).and_then(|req| import_file(&req)) { Ok(id) => json_response(serde_json::json!({"id": id, "status":"imported"}), 201), Err(e) => error_response(&e, 400) },
-      (&Method::Patch, p) if p.starts_with("/api/cards/") => { let id = &p[11..].to_string(); match read_body(&mut request).and_then(|body| serde_json::from_str::<CardPatch>(&body).map_err(|e| format!("请求格式错误: {e}"))).and_then(|patch| update_card(id, patch)) { Ok(card) => json_response(card, 200), Err(e) => error_response(&e, 400) } },
+      (&Method::Patch, p) if p.starts_with("/api/cards/") => { let id = &p[11..].to_string(); match read_body(&mut request).and_then(|body| serde_json::from_str::<CardPatch>(&body).map_err(|e| format!("请求格式错误: {e}"))).and_then(|patch| mysql_update_card(id, patch)) { Ok(card) => json_response(card, 200), Err(e) => error_response(&e, 400) } },
       (&Method::Delete, p) if p.starts_with("/api/cards/") => error_response("删除已有卡片不被支持", 405),
       _ => error_response("not found", 404),
     }; let _ = request.respond(response);
@@ -325,15 +440,33 @@ fn create_backup() -> Result<String, String> {
 fn add_file_to_zip<W: Write + std::io::Seek>(archive: &mut zip::ZipWriter<W>, path: &PathBuf, name: &str, options: zip::write::SimpleFileOptions) -> Result<(), String> { archive.start_file(name, options).map_err(|e| e.to_string())?; let mut file = fs::File::open(path).map_err(|e| e.to_string())?; std::io::copy(&mut file, archive).map_err(|e| e.to_string())?; Ok(()) }
 fn add_dir_to_zip<W: Write + std::io::Seek>(archive: &mut zip::ZipWriter<W>, dir: &PathBuf, prefix: &str, options: zip::write::SimpleFileOptions) -> Result<(), String> { for entry in fs::read_dir(dir).map_err(|e| e.to_string())? { let path = entry.map_err(|e| e.to_string())?.path(); let name = format!("{}/{}", prefix, path.file_name().and_then(|v| v.to_str()).unwrap_or("file")); if path.is_dir() { add_dir_to_zip(archive, &path, &name, options)?; } else { add_file_to_zip(archive, &path, &name, options)?; } } Ok(()) }
 
-fn start_local_api() { std::thread::spawn(|| { if let Ok(server) = Server::http("127.0.0.1:37821") { for request in server.incoming_requests() { handle_request(request); } } }); }
+fn start_local_api() {
+    std::thread::spawn(|| {
+        for attempt in 0..10 {
+            match Server::http("127.0.0.1:37821") {
+                Ok(server) => {
+                    for request in server.incoming_requests() { handle_request(request); }
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("local_api_bind_failed attempt={} error={}", attempt + 1, error);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+        }
+        eprintln!("local_api_unavailable after retries");
+    });
+}
 
 mod commands {
     use super::*;
     #[tauri::command] pub fn seed_workspace() -> Result<String, String> { let db = db_connection()?; seed_defaults(&db)?; let count: i64 = db.query_row("SELECT COUNT(*) FROM cards WHERE deleted_at IS NULL", [], |row| row.get(0)).map_err(|e| e.to_string())?; Ok(format!("workspace_ready:cards={count}:root={DATA_ROOT}")) }
     #[tauri::command] pub fn data_location() -> String { DATA_ROOT.to_string() }
-    #[tauri::command] pub fn soft_delete_card(id: String) -> Result<(), String> { let db = db_connection()?; let changed = db.execute("UPDATE cards SET deleted_at=?1, updated_at=?1 WHERE id=?2 AND deleted_at IS NULL", params![now_string(), id]).map_err(|e| e.to_string())?; if changed == 0 { return Err("卡片不存在或已在回收站".into()); } audit(&db,"desktop-user","soft_delete",Some(&id),"move card to recycle bin")?; Ok(()) }
-    #[tauri::command] pub fn restore_card(id: String) -> Result<(), String> { let db = db_connection()?; let changed = db.execute("UPDATE cards SET deleted_at=NULL, updated_at=?1 WHERE id=?2 AND deleted_at IS NOT NULL", params![now_string(), id]).map_err(|e| e.to_string())?; if changed == 0 { return Err("回收站中没有这张卡片".into()); } audit(&db,"desktop-user","restore_card",Some(&id),"restore card")?; Ok(()) }
+    #[tauri::command] pub fn soft_delete_card(id: String) -> Result<(), String> { let mut conn = mysql_connection()?; conn.exec_drop("UPDATE cards SET deleted_at=NOW(6), updated_at=NOW(6) WHERE id=:id AND deleted_at IS NULL", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; if conn.affected_rows() == 0 { return Err("卡片不存在或已在回收站".into()); } conn.exec_drop("INSERT INTO audit_log(actor,action,target_id,detail,created_at) VALUES('desktop-user','soft_delete',:id,'move card to recycle bin',NOW(6))", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e| e.to_string())?; Ok(()) }
+    #[tauri::command] pub fn restore_card(id: String) -> Result<(), String> { let mut conn = mysql_connection()?; conn.exec_drop("UPDATE cards SET deleted_at=NULL, updated_at=NOW(6) WHERE id=:id AND deleted_at IS NOT NULL", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; if conn.affected_rows() == 0 { return Err("回收站中没有这张卡片".into()); } conn.exec_drop("INSERT INTO audit_log(actor,action,target_id,detail,created_at) VALUES('desktop-user','restore_card',:id,'restore card',NOW(6))", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e| e.to_string())?; Ok(()) }
+    #[tauri::command] pub fn permanently_delete_card(id: String) -> Result<(), String> { let mut conn = mysql_connection()?; conn.query_drop("START TRANSACTION").map_err(|e| e.to_string())?; let result = (|| { conn.exec_drop("DELETE FROM card_relations WHERE from_card_id=:id OR to_card_id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; conn.exec_drop("DELETE FROM card_versions WHERE card_id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; conn.exec_drop("DELETE FROM card_contents WHERE card_id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; conn.exec_drop("DELETE FROM audit_log WHERE target_id=:id", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id.clone()))]))).map_err(|e| e.to_string())?; conn.exec_drop("DELETE FROM cards WHERE id=:id AND deleted_at IS NOT NULL", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e| e.to_string())?; if conn.affected_rows() == 0 { return Err("只允许永久删除回收站中的卡片".into()); } Ok::<(),String>(()) })(); match result { Ok(()) => { conn.query_drop("COMMIT").map_err(|e| e.to_string())?; Ok(()) }, Err(e) => { let _ = conn.query_drop("ROLLBACK"); Err(e) } } }
+    #[tauri::command] pub fn mysql_status() -> Result<serde_json::Value, String> { let mut conn = mysql_connection()?; let version: String = conn.query_first("SELECT VERSION()").map_err(|e| format!("读取 MySQL 版本失败: {e}"))?.ok_or_else(|| "MySQL 未返回版本".to_string())?; Ok(serde_json::json!({"ok":true,"host":"127.0.0.1","port":3306,"database":MYSQL_DATABASE,"user":MYSQL_USER,"version":version})) }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() { if let Ok(db) = db_connection() { let _ = seed_defaults(&db); } start_local_api(); tauri::Builder::default().plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init()).invoke_handler(tauri::generate_handler![commands::seed_workspace, commands::data_location, commands::soft_delete_card, commands::restore_card]).run(tauri::generate_context!()).expect("error while running tauri application"); }
+pub fn run() { start_local_api(); tauri::Builder::default().plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init()).invoke_handler(tauri::generate_handler![commands::seed_workspace, commands::data_location, commands::soft_delete_card, commands::restore_card, commands::permanently_delete_card, commands::mysql_status]).run(tauri::generate_context!()).expect("error while running tauri application"); }

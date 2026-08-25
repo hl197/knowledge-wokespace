@@ -21,3 +21,7 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tiny_http = "0.12"
 zip = "2.2"
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
+mysql = "26"
+sha2 = "0.10"
+windows-sys = { version = "0.59", features = ["Win32_Security_Credentials"] }

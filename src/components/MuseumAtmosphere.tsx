@@ -44,13 +44,6 @@ export default function MuseumAtmosphere({ reducedMotion, theme }: { reducedMoti
         const y = h * (.5 + index * .09) + ((now * .12) % 18)
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
       }
-      palette.forEach((color, index) => {
-        const x = w * (.2 + index * .3) + Math.sin(now * .006 + index) * 28
-        const beam = ctx.createLinearGradient(x, h, x + (index - 1) * 80, 0)
-        beam.addColorStop(0, `${color}00`); beam.addColorStop(.5, `${color}2b`); beam.addColorStop(1, `${color}00`)
-        ctx.fillStyle = beam
-        ctx.beginPath(); ctx.moveTo(x - 35, h); ctx.lineTo(x + 35, h); ctx.lineTo(x + 8, h * .08); ctx.lineTo(x - 8, h * .08); ctx.closePath(); ctx.fill()
-      })
       particles.forEach((particle, index) => {
         const x = particle.x * w + Math.sin(now * .003 + particle.phase) * 9
         const y = ((particle.y + now * particle.speed) % 1) * h

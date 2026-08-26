@@ -1102,6 +1102,8 @@ grilling 分轮设计树
 - 0.39：修复安装版本地服务不可用和卡片读取失败；启动时不再以旧 SQLite 初始化阻塞 MySQL API，127.0.0.1:37821 绑定增加重试，MySQL UNIX_TIMESTAMP 字段显式转换为整数；重新安装后 `/api/health` 返回 200（storage=mysql），`/api/cards` 返回 200（15 张正常卡片），`/api/search?q=React` 返回 200（11 条结果）。
 - 0.40：完成最终桌面版视觉与交互收口；左侧导航固定、右侧内容独立滚动；卡片采用固定三段布局，标签区、来源区和更新时间不再重合；Windows 应用/任务栏图标替换为新版 Logo ICO；生产入口加入 Windows GUI subsystem，避免发布版额外弹出控制台窗口；用户软删除/恢复命令切换到 MySQL；最终 NSIS 安装包生成并安装验证，health/cards 均返回 200。
 - 0.41：修复回收站数据流和最终版视觉；MySQL `/api/cards?include_deleted=1` 返回全部卡片，普通列表隐藏 `deleted_at`，回收站按 `deletedAt` 显示并统计；首页副标题改为“在本机统一管理、检索、版本化和恢复你的 AI 知识资产。”；卡片底部改为固定网格对齐；重新生成新版多尺寸 Logo ICO、重新打包并安装；安装版回读 total=18、deleted=4、health=200、storage=mysql。
+- 0.43：完成最终 0.1.2 桌面版；删除 Hero 区域 3 根光柱 JSX/CSS/动画，保留粒子、网格和轨道；使用新版 Logo 生成多尺寸圆角 ICO 并升版本避免 Windows 图标缓存；设置页新增自定义应用名称，localStorage 持久化并同步侧边栏/工作区名称；最终安装版 health=200、cards=200、MySQL 读取正常。
+- 0.42：完成项目交付总结与技能沉淀；更新通用 `frontend-design-studio` 技能，加入本地优先 Tauri/MySQL、Windows Credential Manager、软删除/回收站、固定导航、卡片三段布局、轻量 Canvas、Logo/NSIS 和安装版真实回读门禁；同步创建工作台技能卡“技能：前端设计工作室与本地桌面交付沉淀”，创建返回 201、详情回读 200、Tauri 关键词搜索命中。
 
 ## 35. MySQL 存储迁移待办
 

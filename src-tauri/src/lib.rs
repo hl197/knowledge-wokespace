@@ -215,7 +215,7 @@ fn mysql_get_card(id: &str) -> Result<serde_json::Value, String> {
 
 fn mysql_list_versions(id: &str) -> Result<serde_json::Value, String> {
     let mut conn = mysql_connection()?;
-    let rows: Vec<mysql::Row> = conn.exec("SELECT id,card_id,title,summary,tags,status,UNIX_TIMESTAMP(created_at) FROM card_versions WHERE card_id=:id ORDER BY id DESC", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e|e.to_string())?;
+    let rows: Vec<mysql::Row> = conn.exec("SELECT id,card_id,title,summary,tags,status,CAST(UNIX_TIMESTAMP(created_at) AS SIGNED) FROM card_versions WHERE card_id=:id ORDER BY id DESC", mysql::Params::Named(std::collections::HashMap::from([(b"id".to_vec(), mysql::Value::from(id))]))).map_err(|e|e.to_string())?;
     let mut result = Vec::new();
     for row in rows { let (id,card_id,title,summary,tags,status,created_at):(i64,String,String,String,String,String,i64)=mysql::from_row_opt(row).map_err(|e|e.to_string())?; result.push(serde_json::json!({"id":id,"cardId":card_id,"title":title,"summary":summary,"tags":serde_json::from_str::<serde_json::Value>(&tags).unwrap_or(serde_json::json!([])),"status":status,"createdAt":created_at.to_string()})); }
     Ok(serde_json::Value::Array(result))
@@ -239,7 +239,7 @@ fn mysql_search_context(params: &std::collections::HashMap<String, String>) -> R
 fn mysql_list_audit(params: &std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
     let limit = params.get("limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(50).min(200);
     let mut conn = mysql_connection()?;
-    let rows: Vec<mysql::Row> = conn.exec("SELECT id,actor,action,target_id,detail,UNIX_TIMESTAMP(created_at) FROM audit_log ORDER BY id DESC LIMIT :limit", mysql::Params::Named(std::collections::HashMap::from([(b"limit".to_vec(), mysql::Value::from(limit as u64))]))).map_err(|e|e.to_string())?;
+    let rows: Vec<mysql::Row> = conn.exec("SELECT id,actor,action,target_id,detail,CAST(UNIX_TIMESTAMP(created_at) AS SIGNED) FROM audit_log ORDER BY id DESC LIMIT :limit", mysql::Params::Named(std::collections::HashMap::from([(b"limit".to_vec(), mysql::Value::from(limit as u64))]))).map_err(|e|e.to_string())?;
     let mut result=Vec::new(); for row in rows { let id=row.get::<i64,usize>(0).unwrap_or(0); result.push(serde_json::json!({"id":id,"actor":row.get::<String,usize>(1).unwrap_or_default(),"action":row.get::<String,usize>(2).unwrap_or_default(),"targetId":row.get::<Option<String>,usize>(3).unwrap_or(None),"detail":row.get::<Option<String>,usize>(4).unwrap_or(None),"createdAt":row.get::<i64,usize>(5).unwrap_or(0).to_string()})); } Ok(serde_json::Value::Array(result))
 }
 
